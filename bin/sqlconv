@@ -76,6 +76,7 @@ def conv(tab1, map1, tab2, map2, dump)
   # find source table
   data.string = dump.read # dump.read(5000) # TODO: Add streaming support
   into = data.scan_for(/insert into (['"`]?)#{tab1}\1 values /io)
+  into or (warn "unable to find insert statements for the '#{tab1}' table" or exit)
 
   # process each line
   loop do
