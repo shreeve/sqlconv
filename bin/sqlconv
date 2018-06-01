@@ -1,0 +1,192 @@
+#!/usr/bin/env ruby
+
+STDOUT.sync = true
+
+require 'strscan'
+
+# parsing helpers
+class StringScanner
+  def scan_for(regx)
+    data = scan_until(Regexp === regx ? regx : /#{regx}/)
+    size = matched_size or return
+    data[-size..-1]
+  end
+
+  def scan_str(str)
+    if string[pos, str.size] == str
+      self.pos += str.size
+      str
+    else
+      nil
+    end
+  end
+
+  def scan_while(regx, skip=nil)
+    seen = -1
+    list = []
+    while item = scan(regx)
+      if skip
+        list << item if (seen += 1) % skip == 0
+      else
+        list << item
+      end
+    end
+    list
+  end
+end
+
+# struct for dealing with selectors
+Selector = Struct.new(:want, :func, :text, :zero, :thru, :reps, :from, :till)
+
+# convert user request into selectors
+def grok(want)
+  (want || "1-").strip.split(/\s*,\s*/).map do |item|
+    item =~ %r!^
+      (?:(\d+)\*)?(?:              # $1: repeat
+        (?:([a-zA-Z]\w*)(\()?)?(?: # $2: function, $3: optional paren
+        (?:(['"])(.*?)\4)? |       # $4: quote, $5: literal
+        (0) |                      # $6: zero
+        ((?>[1-9]\d*))?            # $7: from
+          ((?<=\d)-|-(?=\d))?      # $8: thru
+          ((?>[1-9]\d*))?          # $9: till
+        )\)?
+      )$
+    !iox or raise "invalid selector item '#{item}'"
+    Selector.new(*$~.values_at(0, 2, 5, 6, 8), *$~.values_at(1, 7, 9).map {|e| e&.to_i })
+  end or raise "invalid selector '#{want}'"
+end
+
+# convert the insert statements
+def conv(tab1, map1, tab2, map2, dump)
+  data = StringScanner.new("")
+  need = grok(map1)
+  cols = nil
+  len1 = nil
+  len2 = nil
+  ours = []
+  posn = 0
+
+  # statement prefix
+  pref = [
+    "insert into #{tab2 || tab1}",
+    (" (#{map2})" if map2),
+    " values (",
+  ].compact.join
+
+  # find source table
+  data.string = dump.read # dump.read(5000) # TODO: Add streaming support
+  into = data.scan_for(/insert into (['"`]?)#{tab1}\1 values /io)
+
+  # process each line
+  loop do
+
+    # parse insert statements
+    if data.scan_str("(") or data.scan_str(into + "(")
+      /(?:insert into (['"`]?)#{tab1}\1 values )?\(/io
+      cols = data.scan_while(/('.*?(?<!\\)'|(?>[^',()]+)|,)/, 2)
+      cols.empty? and (warn "bad sql parse: '#{line}'" or next)
+      data.scan(/\)[;,]\s*/)
+    else
+      break
+    end
+
+    # perform one-time check on source column bounds
+    unless len1
+      len1 = cols.size
+      need.each do |item|
+        item.text &&= ["'", item.text.gsub("'", "\\\\'"), "'"].join
+        if (len2 = [item.from, item.till, 0].compact.max) > len1
+          warn "selector '#{item.want}' referenced source column #{len2}, but only #{len1} are defined"
+          cols &&= nil
+        end
+      end
+      cols or exit
+      len1 = cols.size
+      len2 = nil # we hijacked len2, so clear it
+    end
+
+    # pluck desired columns
+    ours.clear
+    need.each do |item|
+      (item.reps || 1).times do # repeats
+        case
+        when item.func # function (TODO: honor text/zero/from/till)
+          case item.func
+          when "rand"     then ours.push("'random number here!'")
+          when "n","null" then ours.push("null")
+          else abort "undefined function '#{item.func}'"
+          end
+        when item.text# literal
+          ours.push(item.text)
+        when item.zero # zero
+          ours.push(0)
+        when item.thru # range
+          from = item.from || 1
+          till = item.till || len1
+          ours.concat case till <=> from
+            when 0,1 then cols[(from-1)..(till-1)]
+            when -1  then cols[(till-1)..(from-1)].reverse
+          end
+        when item.from || item.till # one column
+          ours.push(cols[(item.from || item.till) - 1])
+        else # null
+          ours.push("null")
+        end
+      end
+    end
+
+    # perform one-time check on destination column counts
+    unless len2
+      if map2 and (len2 = map2.split(",").size) != ours.size
+        warn "destination column mismatch (#{len2} defined but #{ours.size} generated)"
+        cols &&= nil
+      else
+        len2 = ours.size
+      end
+      cols or exit
+    end
+
+    # output insert statement
+    puts [pref, ours * ",", ");"].join
+  end
+end
+
+# ==[ invoke the cli ]==
+
+if ARGV.shift =~ /^([a-z][-\w]*):?(.+)?$/
+  tab1 = $1
+  map1 = $2
+end
+
+if ARGV.size > 0 and !File.exists?(ARGV.first)
+  if ARGV.shift =~ /^((?>[a-z]?[-\w]*)(?::|$))?(.+)?$/
+    $1.to_s.size > 0 and tab2 = $1.chomp(":")
+    $2.to_s.size > 0 and map2 = $2.squeeze(',').sub(/^,+/,'').sub(/,+$/,'')
+  end
+  tab1 = nil if $0.size == 0 # no match, show usage
+end
+
+tab1 or (warn [
+  "Usage: #{File.basename $0}",
+  "<src_table>(:[sel1,sel2,...])",
+  "[dst_table][:][col1,col2,...] file"
+] * ' ' or exit)
+
+conv tab1, map1, tab2 || tab1, map2, ARGF
+
+__END__
+
+# show opt parsing
+p [:tab1, tab1]
+p [:map1, map1]
+p [:tab2, tab2]
+p [:map2, map2]
+p [:argv, ARGV]
+exit
+
+# values for testing
+tab1 = 'adonis_schema'
+map1 = nil
+tab2 = nil
+map2 = nil
+ARGV.push 'db1.sql'
