@@ -10,4 +10,5 @@ Gem::Specification.new do |s|
   s.homepage    = "https://github.com/shreeve/sqlconv"
   s.license     = "MIT"
   s.files       = `git ls-files`.split("\n") - %w[.gitignore]
+  s.executables = `cd bin && git ls-files .`.split("\n")
 end
