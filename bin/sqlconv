@@ -13,7 +13,7 @@ class StringScanner
   end
 
   def scan_str(str)
-    if string[pos, str.size] == str
+    if peek(str.size) == str
       self.pos += str.size
       str
     else
