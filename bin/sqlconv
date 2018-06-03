@@ -2,6 +2,11 @@
 
 STDOUT.sync = true
 
+def die(str)
+  warn str
+  exit
+end
+
 require 'strscan'
 
 # parsing helpers
@@ -76,7 +81,7 @@ def conv(tab1, map1, tab2, map2, dump)
   # find source table
   data.string = dump.read # dump.read(5000) # TODO: Add streaming support
   into = data.scan_for(/insert into (['"`]?)#{tab1}\1 values /io)
-  into or (warn "unable to find insert statements for the '#{tab1}' table" or exit)
+  into or die "unable to find insert statements for the '#{tab1}' table"
 
   # process each line
   loop do
@@ -84,7 +89,7 @@ def conv(tab1, map1, tab2, map2, dump)
     # parse insert statements
     if data.scan_str("(") or data.scan_str(into + "(")
       cols = data.scan_while(/('.*?(?<!\\)'|(?>[^',()]+)|,)/, 2)
-      cols.empty? and (warn "bad sql parse: '#{line}'" or next)
+      cols.empty? and die "bad sql parse: '#{line}'"
       data.scan(/\)[;,]\s*/)
     else
       break
@@ -166,11 +171,11 @@ if ARGV.size > 0 and !File.exists?(ARGV.first)
   tab1 = nil if $0.size == 0 # no match, show usage
 end
 
-tab1 or (warn [
+tab1 or die [
   "Usage: #{File.basename $0}",
   "<src_table>(:[sel1,sel2,...])",
   "[dst_table][:][col1,col2,...] file"
-] * ' ' or exit)
+] * ' '
 
 conv tab1, map1, tab2 || tab1, map2, ARGF
 
