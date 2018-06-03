@@ -62,7 +62,7 @@ def grok(want)
 end
 
 # convert the insert statements
-def conv(tab1, map1, tab2, map2, dump)
+def conv(tab1, map1, tab2, map2, repl, dump)
   data = StringScanner.new("")
   need = grok(map1)
   cols = nil
@@ -73,7 +73,7 @@ def conv(tab1, map1, tab2, map2, dump)
 
   # statement prefix
   pref = [
-    "insert into #{tab2 || tab1}",
+    "#{repl ? 'replace' : 'insert'} into #{tab2 || tab1}",
     (" (#{map2})" if map2),
     " values (",
   ].compact.join
@@ -162,7 +162,7 @@ end
 
 argv = -1
 ARGV.size.times do
-  if ARGV[argv += 1] == "-r"
+  if ARGV[argv += 1] == "-p"
     begin
       require plugin = ARGV[argv += 1]
     rescue LoadError
@@ -170,6 +170,10 @@ ARGV.size.times do
     end
     ARGV.slice!((argv -= 2) + 1, 2)
   end
+end
+
+if ARGV.delete "-r"
+  repl = true
 end
 
 if ARGV.shift =~ /^([a-z][-\w]*):?(.+)?$/
@@ -187,12 +191,13 @@ end
 
 tab1 or die [
   "Usage: #{File.basename $0}",
-  "[-r <plugin1.rb> [-r <plugin2.rb>]...]",
+  "[-p <plugin1.rb> [-p <plugin2.rb>]...]",
+  "[-r] (to use 'replace into' instead of 'insert into')",
   "<src_table>(:[sel1,sel2,...])",
   "[dst_table][:][col1,col2,...] file"
 ] * ' '
 
-conv tab1, map1, tab2 || tab1, map2, ARGF
+conv tab1, map1, tab2 || tab1, map2, repl, ARGF
 
 __END__
 
