@@ -119,7 +119,9 @@ def conv(tab1, map1, tab2, map2, dump)
           case item.func
           when "rand"     then ours.push("'random number here!'")
           when "n","null" then ours.push("null")
-          else abort "undefined function '#{item.func}'"
+          else
+            defined?(item.func) == "method" or die "undefined function '#{item.func}'"
+            ours.push *(send item.func, *Array[cols[item.from-1]])
           end
         when item.text# literal
           ours.push(item.text)
@@ -158,6 +160,18 @@ end
 
 # ==[ invoke the cli ]==
 
+argv = -1
+ARGV.size.times do
+  if ARGV[argv += 1] == "-r"
+    begin
+      require plugin = ARGV[argv += 1]
+    rescue LoadError
+      die "unable to load the '#{plugin}' plugin"
+    end
+    ARGV.slice!((argv -= 2) + 1, 2)
+  end
+end
+
 if ARGV.shift =~ /^([a-z][-\w]*):?(.+)?$/
   tab1 = $1
   map1 = $2
@@ -173,6 +187,7 @@ end
 
 tab1 or die [
   "Usage: #{File.basename $0}",
+  "[-r <plugin1.rb> [-r <plugin2.rb>]...]"
   "<src_table>(:[sel1,sel2,...])",
   "[dst_table][:][col1,col2,...] file"
 ] * ' '
