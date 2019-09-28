@@ -141,7 +141,7 @@ def conv(tab1, map1, tab2, map2, mode, dump)
             defined?(item.func) == "method" or die "undefined function '#{item.func}'"
             ours.push *(send item.func, *Array[cols[item.from-1]])
           end
-        when item.text# literal
+        when item.text # literal
           ours.push(item.text)
         when item.zero # zero
           ours.push(0)
@@ -173,7 +173,7 @@ def conv(tab1, map1, tab2, map2, mode, dump)
 
     # output insert statement
     if mode == "pipes"
-      ours.map! {|item| item == "NULL" ? '' : item.gsub("|","~").gsub("''", "'")[1..-2]}
+      ours.map! {|e| e == 'NULL' ? '' : e !~ /\A['"]/ ? e : e[1..-2].gsub("|","~").gsub("''", "'")}
       puts ours * "|"
     else
       puts [pref, ours * ",", ");"].join
