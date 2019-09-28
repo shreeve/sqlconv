@@ -62,7 +62,7 @@ def grok(want)
 end
 
 # convert the insert statements
-def conv(tab1, map1, tab2, map2, repl, dump)
+def conv(tab1, map1, tab2, map2, mode, dump)
   data = StringScanner.new("")
   need = grok(map1)
   cols = nil
@@ -73,7 +73,7 @@ def conv(tab1, map1, tab2, map2, repl, dump)
 
   # statement prefix
   pref = [
-    "#{repl ? 'replace' : 'insert'} into #{tab2 || tab1}",
+    "#{mode == 'replace' ? 'replace' : 'insert'} into #{tab2 || tab1}",
     (" (#{map2})" if map2),
     " values (",
   ].compact.join
@@ -82,6 +82,11 @@ def conv(tab1, map1, tab2, map2, repl, dump)
   data.string = dump.read # dump.read(5000) # TODO: Add streaming support
   into = data.scan_for(/insert into (['"`]?)#{tab1}\1 values /io)
   into or die "unable to find insert statements for the '#{tab1}' table"
+
+  # if needed, output pipes header
+  if mode == "pipes" && map2
+    puts map2.gsub(',','|')
+  end
 
   # process each line
   loop do
@@ -119,6 +124,7 @@ def conv(tab1, map1, tab2, map2, repl, dump)
           case item.func
           when "rand"     then ours.push("'random number here!'")
           when "n","null" then ours.push("null")
+          when "z"        then ours.push((val = cols[item.from-1]) == "NULL" ? 0 : val)
           else
             defined?(item.func) == "method" or die "undefined function '#{item.func}'"
             ours.push *(send item.func, *Array[cols[item.from-1]])
@@ -154,7 +160,12 @@ def conv(tab1, map1, tab2, map2, repl, dump)
     end
 
     # output insert statement
-    puts [pref, ours * ",", ");"].join
+    if mode == "pipes"
+      ours.map! {|item| item == "NULL" ? '' : item.gsub("|","~").gsub("''", "'")[1..-2]}
+      puts ours * "|"
+    else
+      puts [pref, ours * ",", ");"].join
+    end
   end
 end
 
@@ -173,7 +184,9 @@ ARGV.size.times do
 end
 
 if ARGV.delete "-r"
-  repl = true
+  mode = "replace"
+elsif ARGV.delete "--pipes"
+  mode = "pipes"
 end
 
 if ARGV.shift =~ /^([a-z][-\w]*):?(.+)?$/
@@ -192,12 +205,13 @@ end
 tab1 or die [
   "Usage: #{File.basename $0}",
   "[-p <plugin1.rb> [-p <plugin2.rb>]...]",
+  "[--pipes] (to output pipe separated values instead of SQL",
   "[-r] (to use 'replace into' instead of 'insert into')",
   "<src_table>(:[sel1,sel2,...])",
   "[dst_table][:][col1,col2,...] file"
 ] * ' '
 
-conv tab1, map1, tab2 || tab1, map2, repl, ARGF
+conv tab1, map1, tab2 || tab1, map2, mode, ARGF
 
 __END__
 
