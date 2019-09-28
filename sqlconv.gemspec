@@ -2,7 +2,7 @@
 
 Gem::Specification.new do |s|
   s.name        = "sqlconv"
-  s.version     = "0.9.2"
+  s.version     = "1.0"
   s.author      = "Steve Shreeve"
   s.email       = "steve.shreeve@gmail.com"
   s.summary     = "Handy utility to massage MySQL dump files"

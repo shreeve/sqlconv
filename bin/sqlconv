@@ -61,10 +61,31 @@ def grok(want)
   end or raise "invalid selector '#{want}'"
 end
 
+# display table output
+def table(cols, rows)
+  cols.is_a?(Array) && cols.size > 0 or return
+  rows.is_a?(Array) && rows.size > 0 or return
+  join = " | "
+  both = [cols] + rows
+  flip = both.transpose
+  wide = flip.map {|row| row.map {|col| col.to_s.size }.max }
+  pict = wide.map {|len| "%-#{len}.#{len}s" }.join(join)
+  pict = [join, pict, join].join.strip
+  line = (pict % ([""] * cols.size)).tr("| ", "+-")
+  seen = -1
+  puts "", line
+  both.each do |vals|
+    puts pict % vals
+    puts line if (seen += 1) == 0
+  end
+  puts line, "#{seen} rows displayed", ""
+end
+
 # convert the insert statements
 def conv(tab1, map1, tab2, map2, mode, dump)
   data = StringScanner.new("")
   need = grok(map1)
+  rows = nil
   cols = nil
   len1 = nil
   len2 = nil
@@ -86,6 +107,8 @@ def conv(tab1, map1, tab2, map2, mode, dump)
   # if needed, output pipes header
   if mode == "pipes" && map2
     puts map2.gsub(',','|')
+  elsif mode == "table"
+    rows = []
   end
 
   # process each line
@@ -109,7 +132,7 @@ def conv(tab1, map1, tab2, map2, mode, dump)
         puts sep, "| col | %-*.*s |" % [max, max, 'data'], sep
         len1.times do |pos|
           val = cols[pos]
-          val[max-3..] = '...' if val.size > max
+          val[max-3..-1] = '...' if val.size > max
           puts "| %3d | %-*.*s | " % [pos + 1, max, max, val]
         end
         puts sep
@@ -171,13 +194,23 @@ def conv(tab1, map1, tab2, map2, mode, dump)
       cols or exit
     end
 
-    # output insert statement
-    if mode == "pipes"
+    # generate output
+    if mode == "pipes" || mode == "table"
       ours.map! {|e| e == 'NULL' ? '' : e !~ /\A['"]/ ? e : e[1..-2].gsub("|","~").gsub("''", "'")}
+    end
+    if mode == "pipes"
       puts ours * "|"
+    elsif mode == "table"
+      rows << ours.dup
     else
       puts [pref, ours * ",", ");"].join
     end
+  end
+
+  # output table
+  if mode == "table"
+    cols = map2 ? map2.split(',') : rows[0].size.times.map {|i| "col#{i+1}"}
+    table cols, rows
   end
 end
 
@@ -185,7 +218,7 @@ end
 
 argv = -1
 ARGV.size.times do
-  if ARGV[argv += 1] == "-p"
+  if ARGV[argv += 1] == "-x"
     begin
       require plugin = ARGV[argv += 1]
     rescue LoadError
@@ -195,15 +228,11 @@ ARGV.size.times do
   end
 end
 
-if ARGV.delete "-r"
-  mode = "replace"
-elsif ARGV.delete "--pipes"
-  mode = "pipes"
-end
-
-if ARGV.delete "-s"
-  mode = "show"
-end
+# mutually exclusive options
+if    ARGV.delete "-s" then mode = "show"
+elsif ARGV.delete "-r" then mode = "replace"
+elsif ARGV.delete "-p" then mode = "pipes"
+elsif ARGV.delete "-t" then mode = "table"; end
 
 if ARGV.shift =~ /^([a-z][-\w]*):?(.+)?$/
   tab1 = $1
@@ -219,30 +248,14 @@ if ARGV.size > 0 and !File.exists?(ARGV.first)
 end
 
 tab1 or die [
-  "Usage: #{File.basename $0}",
-  "[-p <plugin1.rb> [-p <plugin2.rb>]...]",
-  "[--pipes] (to output pipe separated values instead of SQL",
-  "[-r] (to use 'replace into' instead of 'insert into')",
-  "[-s] (to show column indexes and values for the first row)",
-  "<src_table>(:[sel1,sel2,...])",
-  "[dst_table][:][col1,col2,...] file"
-] * ' '
+  "Usage: #{File.basename $0} <options> " +
+  "<src_table>(:[sel1,sel2,...]) " +
+  "[dst_table][:][col1,col2,...] file",
+  "       -p (output pipe separated values instead of SQL",
+  "       -r (use 'replace into' instead of 'insert into')",
+  "       -s (show column indexes and values for the first row)",
+  "       -t (display output as a formatted table)",
+  "       -x <plugin1.rb> [-x <plugin2.rb>]...]",
+] * "\n"
 
 conv tab1, map1, tab2 || tab1, map2, mode, ARGF
-
-__END__
-
-# show opt parsing
-p [:tab1, tab1]
-p [:map1, map1]
-p [:tab2, tab2]
-p [:map2, map2]
-p [:argv, ARGV]
-exit
-
-# values for testing
-tab1 = 'adonis_schema'
-map1 = nil
-tab2 = nil
-map2 = nil
-ARGV.push 'db1.sql'
