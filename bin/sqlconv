@@ -46,16 +46,15 @@ Selector = Struct.new(:want, :func, :text, :zero, :thru, :reps, :from, :till)
 # convert user request into selectors
 def grok(want)
   (want || "1-").strip.split(/\s*,\s*/).map do |item|
-    item =~ %r!^
-      (?:(\d+)\*)?(?:              # $1: repeat
-        (?:([a-zA-Z]\w*)(\()?)?(?: # $2: function, $3: optional paren
-        (?:(['"])(.*?)\4)? |       # $4: quote, $5: literal
-        (0) |                      # $6: zero
-        ((?>[1-9]\d*))?            # $7: from
-          ((?<=\d)-|-(?=\d))?      # $8: thru
-          ((?>[1-9]\d*))?          # $9: till
-        )\)?
-      )$
+    item =~ %r!^(?:(\d+)\*)?(?:(?:( # $1: repeat
+      (?:\d+(?=\())|[a-zA-Z]\w*)    # $2: function name
+      (\()?)?(?:                    # $3: optional paren
+      (?:(['"])(.*?)\4)? |          # $4: quote, $5: literal
+      (0) |                         # $6: zero
+      ((?>[1-9]\d*))?               # $7: from
+        ((?<=\d)-|-(?=\d))?         # $8: thru
+        ((?>[1-9]\d*))?             # $9: till
+      )\)?)$
     !iox or raise "invalid selector item '#{item}'"
     Selector.new(*$~.values_at(0, 2, 5, 6, 8), *$~.values_at(1, 7, 9).map {|e| e&.to_i })
   end or raise "invalid selector '#{want}'"
@@ -79,6 +78,20 @@ def table(cols, rows)
     puts line if (seen += 1) == 0
   end
   puts line, "#{seen} rows displayed", ""
+end
+
+def escape(str)
+  str =~ /\A(\d+|null)\z/i ? $1 : %|'#{str.gsub("'", "\\\\'")}'|
+end
+
+def unescape(str, nulls=false)
+  str =~ /\A['"]/ and return str[1..-2].gsub("|","~").gsub("''", "'")
+  str == 'NULL'   and return '' unless nulls
+  str
+end
+
+def unescape!(str)
+  unescape(str, true)
 end
 
 # convert the insert statements
@@ -105,10 +118,12 @@ def conv(tab1, map1, tab2, map2, mode, dump)
   into or die "unable to find insert statements for the '#{tab1}' table"
 
   # if needed, output pipes header
-  if mode == "pipes" && map2
-    puts map2.gsub(',','|')
+  if mode == "pipes"
+    puts map2.gsub(',','|') if map2
+    lean = true
   elsif mode == "table"
     rows = []
+    lean = true
   end
 
   # process each line
@@ -118,6 +133,7 @@ def conv(tab1, map1, tab2, map2, mode, dump)
     if data.scan_str("(") or data.scan_str(into + "(")
       cols = data.scan_while(/('.*?(?<!\\)'|(?>[^',()]+)|,)/, 2)
       cols.empty? and die "bad sql parse: '#{line}'"
+      cols.map! {|item| unescape(item)} if lean
       data.scan(/\)[;,]\s*/)
     else
       break
@@ -139,7 +155,7 @@ def conv(tab1, map1, tab2, map2, mode, dump)
         exit
       end
       need.each do |item|
-        item.text &&= ["'", item.text.gsub("'", "\\\\'"), "'"].join
+        item.text &&= escape(item.text) unless lean
         if (len2 = [item.from, item.till, 0].compact.max) > len1
           warn "selector '#{item.want}' referenced source column #{len2}, but only #{len1} are defined"
           cols &&= nil
@@ -159,7 +175,12 @@ def conv(tab1, map1, tab2, map2, mode, dump)
           case item.func
           when "rand"     then ours.push("'random number here!'")
           when "n","null" then ours.push("null")
-          when "z"        then ours.push((val = cols[item.from-1]) == "NULL" ? 0 : val)
+          when "z"        then ours.push((val = cols[item.from     -1]) == "NULL" ? 0  : val)
+          when /^(\d+)$/
+            val = cols[item.func.to_i - 1]
+            val = unescape(val) unless lean
+            val = val[0, item.from]
+            ours.push(val)
           else
             defined?(item.func) == "method" or die "undefined function '#{item.func}'"
             ours.push *(send item.func, *Array[cols[item.from-1]])
@@ -195,9 +216,6 @@ def conv(tab1, map1, tab2, map2, mode, dump)
     end
 
     # generate output
-    if mode == "pipes" || mode == "table"
-      ours.map! {|e| e == 'NULL' ? '' : e !~ /\A['"]/ ? e : e[1..-2].gsub("|","~").gsub("''", "'")}
-    end
     if mode == "pipes"
       puts ours * "|"
     elsif mode == "table"
