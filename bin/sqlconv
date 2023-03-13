@@ -1,15 +1,59 @@
 #!/usr/bin/env ruby
 
+VERSION = "1.2.0"
+
 STDOUT.sync = true
 
-def die(str)
-  warn str
-  exit
+require "censive"
+require "optparse"
+require "strscan"
+
+trap("INT" ) { abort "\n" }
+
+def die!; abort "#{File.basename($0)}: invalid usage, use -h for help"; end
+
+OptionParser.new.instance_eval do
+  @banner  = "usage: #{program_name} <options> <src_table>(:[sel1,sel2,...]) [dst_table][:][col1,col2,...] <dumpfile.sql or ARGF>"
+
+  on       "--csv"                    , "Output comma separated values instead of SQL"
+  on       "--psv"                    , "Output pipe separated values instead of SQL"
+  on       "--tsv"                    , "Output tab separated values instead of SQL"
+  on "-p", "--plugin <plugin1.rb,...>", "Comma separated list of plugins"
+  on "-r", "--replace"                , "Use 'replace into' instead of 'insert into'"
+  on "-s", "--show"                   , "Show column indexes and values for the first row"
+  on "-t", "--table"                  , "Display output as a formatted table"
+
+  on "-h", "--help"                   , "Show help and command usage" do Kernel.abort to_s; end
+  on "-v", "--version"                , "Show version number" do Kernel.abort "#{program_name} #{VERSION}"; end
+
+  self
+end.parse!(into: opts={}) rescue abort($!.message)
+
+csvs = opts[:csv    ] and mode = "csv"
+pipe = opts[:psv    ] and mode = "psv"
+tabs = opts[:tsv    ] and mode = "tsv"
+nice = opts[:table  ] and mode = "table"
+repl = opts[:replace] and mode = "replace"
+show = opts[:show   ] and mode = "show"
+plug = opts[:plugin].to_s.downcase.split(",")
+
+die! if [csvs, pipe, tabs, nice, repl, show].compact.size > 1
+
+if ARGV.shift =~ /^([a-z][-\w]*):?(.+)?$/i
+  tab1 = $1
+  map1 = $2
 end
 
-require 'strscan'
+if !ARGV.empty? and !File.exist?(ARGV.first)
+  if ARGV.shift =~ /^((?>[a-z]?[-\w]*)(?::|$))?(.+)?$/i
+    $1.to_s.size > 0 and tab2 = $1.chomp(":")
+    $2.to_s.size > 0 and map2 = $2.squeeze(",").sub(/^,+/,"").sub(/,+$/,"")
+  end
+  die! if $0.empty?
+end
 
-# parsing helpers
+# ==[ Helpers ]==
+
 class StringScanner
   def scan_for(regx)
     data = scan_until(Regexp === regx ? regx : /#{regx}/)
@@ -64,20 +108,23 @@ end
 def table(cols, rows)
   cols.is_a?(Array) && cols.size > 0 or return
   rows.is_a?(Array) && rows.size > 0 or return
-  join = " | "
+  join = " │ "
   both = [cols] + rows
   flip = both.transpose
   wide = flip.map {|row| row.map {|col| col.to_s.size }.max }
   pict = wide.map {|len| "%-#{len}.#{len}s" }.join(join)
   pict = [join, pict, join].join.strip
-  line = (pict % ([""] * cols.size)).tr("| ", "+-")
+  base = (pict % ([""] * cols.size))[1...-1]
+  ltop = "┌" + base.tr("│ ", "┬─") + "┐"
+  lmid = "├" + base.tr("│ ", "┼─") + "┤"
+  lbot = "└" + base.tr("│ ", "┴─") + "┘"
   seen = -1
-  puts "", line
+  puts "", ltop
   both.each do |vals|
     puts pict % vals
-    puts line if (seen += 1) == 0
+    puts lmid if (seen += 1) == 0
   end
-  puts line, "#{seen} rows displayed", ""
+  puts lbot, "#{seen} rows displayed", ""
 end
 
 def escape(str)
@@ -86,7 +133,7 @@ end
 
 def unescape(str, nulls=false)
   str =~ /\A['"]/ and return str[1..-2].gsub("|","~").gsub("''", "'")
-  str == 'NULL'   and return '' unless nulls
+  str == "NULL"   and return "" unless nulls
   str
 end
 
@@ -115,13 +162,18 @@ def conv(tab1, map1, tab2, map2, mode, dump)
   # find source table
   data.string = dump.read # dump.read(5000) # TODO: Add streaming support
   into = data.scan_for(/insert into (['"`]?)#{tab1}\1 values /io)
-  into or die "unable to find insert statements for the '#{tab1}' table"
+  into or abort "unable to find insert statements for the '#{tab1}' table"
 
   # if needed, output pipes header
-  if mode == "pipes"
-    puts map2.gsub(',','|') if map2
+  case mode
+  when "psv", "tsv"
+    puts map2.gsub(",", mode == "psv" ? "|" : "\t") if map2
     lean = true
-  elsif mode == "table"
+  when "csv"
+    $csv = Censive.writer(out: $stdout)
+    $csv << map2.split(",") if map2
+    lean = true
+  when "table"
     rows = []
     lean = true
   end
@@ -132,7 +184,7 @@ def conv(tab1, map1, tab2, map2, mode, dump)
     # parse insert statements
     if data.scan_str("(") or data.scan_str(into + "(")
       cols = data.scan_while(/('.*?(?<!\\)'|(?>[^',()]+)|,)/, 2)
-      cols.empty? and die "bad sql parse: '#{line}'"
+      cols.empty? and abort "bad sql parse: '#{line}'"
       cols.map! {|item| unescape(item)} if lean
       data.scan(/\)[;,]\s*/)
     else
@@ -143,15 +195,10 @@ def conv(tab1, map1, tab2, map2, mode, dump)
     unless len1
       len1 = cols.size
       if mode == "show"
-        max = 32
-        sep = "+-----+-#{'-' * max}-+"
-        puts sep, "| col | %-*.*s |" % [max, max, 'data'], sep
-        len1.times do |pos|
-          val = cols[pos]
-          val[max-3..-1] = '...' if val.size > max
-          puts "| %3d | %-*.*s | " % [pos + 1, max, max, val]
+        data = cols.map.with_index do |data, i|
+          [i + 1, data.size > 32 ? data[...-3] + "..." : data]
         end
-        puts sep
+        table %w[ col data], data
         exit
       end
       need.each do |item|
@@ -182,7 +229,7 @@ def conv(tab1, map1, tab2, map2, mode, dump)
             val = val[0, item.from]
             ours.push(val)
           else
-            defined?(item.func) == "method" or die "undefined function '#{item.func}'"
+            defined?(item.func) == "method" or abort "undefined function '#{item.func}'"
             ours.push *(send item.func, *Array[cols[item.from-1]])
           end
         when item.text # literal
@@ -207,7 +254,7 @@ def conv(tab1, map1, tab2, map2, mode, dump)
     # perform one-time check on destination column counts
     unless len2
       if map2 and (len2 = map2.split(",").size) != ours.size
-        warn "destination column mismatch (#{len2} defined but #{ours.size} generated)"
+        warn "destination column mismatch (#{ours.size} sourced but #{len2} targeted)"
         cols &&= nil
       else
         len2 = ours.size
@@ -216,64 +263,22 @@ def conv(tab1, map1, tab2, map2, mode, dump)
     end
 
     # generate output
-    if mode == "pipes"
-      puts ours * "|"
-    elsif mode == "table"
-      rows << ours.dup
-    else
-      puts [pref, ours * ",", ");"].join
+    case mode
+    when "psv"   then puts ours * "|"
+    when "tsv"   then puts ours * "\t"
+    when "csv"   then $csv << ours
+    when "table" then rows << ours.dup
+    else puts [pref, ours * ",", ");"].join
     end
   end
 
   # output table
   if mode == "table"
-    cols = map2 ? map2.split(',') : rows[0].size.times.map {|i| "col#{i+1}"}
+    cols = map2 ? map2.split(",") : rows[0].size.times.map {|i| "col#{i+1}"}
     table cols, rows
   end
 end
 
-# ==[ invoke the cli ]==
-
-argv = -1
-ARGV.size.times do
-  if ARGV[argv += 1] == "-x"
-    begin
-      require plugin = ARGV[argv += 1]
-    rescue LoadError
-      die "unable to load the '#{plugin}' plugin"
-    end
-    ARGV.slice!((argv -= 2) + 1, 2)
-  end
-end
-
-# mutually exclusive options
-if    ARGV.delete "-s" then mode = "show"
-elsif ARGV.delete "-r" then mode = "replace"
-elsif ARGV.delete "-p" then mode = "pipes"
-elsif ARGV.delete "-t" then mode = "table"; end
-
-if ARGV.shift =~ /^([a-z][-\w]*):?(.+)?$/
-  tab1 = $1
-  map1 = $2
-end
-
-if ARGV.size > 0 and !File.exists?(ARGV.first)
-  if ARGV.shift =~ /^((?>[a-z]?[-\w]*)(?::|$))?(.+)?$/
-    $1.to_s.size > 0 and tab2 = $1.chomp(":")
-    $2.to_s.size > 0 and map2 = $2.squeeze(',').sub(/^,+/,'').sub(/,+$/,'')
-  end
-  tab1 = nil if $0.size == 0 # no match, show usage
-end
-
-tab1 or die [
-  "Usage: #{File.basename $0} <options> " +
-  "<src_table>(:[sel1,sel2,...]) " +
-  "[dst_table][:][col1,col2,...] file",
-  "       -p (output pipe separated values instead of SQL",
-  "       -r (use 'replace into' instead of 'insert into')",
-  "       -s (show column indexes and values for the first row)",
-  "       -t (display output as a formatted table)",
-  "       -x <plugin1.rb> [-x <plugin2.rb>]...]",
-] * "\n"
+# ==[ Let 'er rip! ]==
 
 conv tab1, map1, tab2 || tab1, map2, mode, ARGF
