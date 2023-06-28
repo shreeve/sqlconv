@@ -1,7 +1,5 @@
 #!/usr/bin/env ruby
 
-VERSION = "1.2.0"
-
 STDOUT.sync = true
 
 require "censive"
@@ -14,6 +12,7 @@ def die!; abort "#{File.basename($0)}: invalid usage, use -h for help"; end
 
 OptionParser.new.instance_eval do
   @banner  = "usage: #{program_name} <options> <src_table>(:[sel1,sel2,...]) [dst_table][:][col1,col2,...] <dumpfile.sql or ARGF>"
+  @version = "1.2.0"
 
   on       "--csv"                    , "Output comma separated values instead of SQL"
   on       "--psv"                    , "Output pipe separated values instead of SQL"
@@ -24,7 +23,7 @@ OptionParser.new.instance_eval do
   on "-t", "--table"                  , "Display output as a formatted table"
 
   on "-h", "--help"                   , "Show help and command usage" do Kernel.abort to_s; end
-  on "-v", "--version"                , "Show version number" do Kernel.abort "#{program_name} #{VERSION}"; end
+  on "-v", "--version"                , "Show version number" do Kernel.abort "#{program_name} #{@version}"; end
 
   self
 end.parse!(into: opts={}) rescue abort($!.message)
@@ -170,7 +169,7 @@ def conv(tab1, map1, tab2, map2, mode, dump)
     puts map2.gsub(",", mode == "psv" ? "|" : "\t") if map2
     lean = true
   when "csv"
-    $csv = Censive.writer(out: $stdout)
+    $csv = Censive.write
     $csv << map2.split(",") if map2
     lean = true
   when "table"
